@@ -1,0 +1,66 @@
+# Native Apple Silicon / Metal 4 build. Every target is build-only.
+.DEFAULT_GOAL := emulator
+METAL4_BUILD_ROOT ?= $(HOME)/Documents/Supermodel-metal-build
+REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+BUILD_ROOT := $(abspath $(METAL4_BUILD_ROOT))
+ifeq ($(BUILD_ROOT),/)
+$(error METAL4_BUILD_ROOT must be a dedicated external build directory)
+endif
+ifneq ($(filter $(REPO_ROOT) $(REPO_ROOT)/%,$(BUILD_ROOT)),)
+$(error METAL4_BUILD_ROOT must be outside the source repository)
+endif
+ifneq ($(findstring audit,$(shell echo '$(BUILD_ROOT)' | tr '[:upper:]' '[:lower:]')),)
+$(error METAL4_BUILD_ROOT must be outside audit directories)
+endif
+
+include Makefiles/Options.inc
+NATIVE_DIR := $(REPO_ROOT)/Src/Graphics/Metal4
+FRAMEWORK_ROOT := $(BUILD_ROOT)/Frameworks
+FRAMEWORK_STAMP := $(FRAMEWORK_ROOT)/.ready
+OBJ_DIR := $(BUILD_ROOT)/obj
+BIN_DIR := $(BUILD_ROOT)
+CC = clang
+CXX = clang++
+LD = clang++
+PLATFORM_CXXFLAGS = -DSUPERMODEL_OSX -DSUPERMODEL_METAL4 -F$(FRAMEWORK_ROOT) -I$(FRAMEWORK_ROOT)/SDL2.framework/Headers -I$(FRAMEWORK_ROOT)/SDL2_net.framework/Headers
+PLATFORM_LDFLAGS = -arch arm64 -mmacosx-version-min=26.0 -F$(FRAMEWORK_ROOT) -framework SDL2 -framework SDL2_net -framework Metal -framework QuartzCore -framework Cocoa -lz -Wl,-rpath,@executable_path/Frameworks
+PLATFORM_DIRS = $(FRAMEWORK_STAMP)
+PLATFORM_BINARY_EXTENSION =
+PLATFORM_TARGETS = $(BUILD_ROOT)/Supermodel.metallib
+PLATFORM_EXTERNAL_BUILD = 1
+NATIVE_NAMES := Context SceneRenderer Window Render2D SuperAA Pro1000Render2D CrosshairRenderer GuiRenderer
+PLATFORM_SRC_FILES = Src/OSD/OSX/FileSystemPath.cpp $(addprefix Src/Graphics/Metal4/,$(addsuffix .mm,$(NATIVE_NAMES)))
+PLATFORM_EXCLUDE_SRC_FILES = Src/Pkgs/glew.cpp Src/Graphics/Shader.cpp Src/Graphics/FBO.cpp Src/Graphics/Render2D.cpp Src/Graphics/Pro1000Render2D.cpp Src/Graphics/SuperAA.cpp Src/Graphics/New3D/GLSLShader.cpp Src/Graphics/New3D/VBO.cpp Src/Graphics/New3D/R3DShader.cpp Src/Graphics/New3D/R3DFrameBuffers.cpp Src/Graphics/New3D/R3DScrollFog.cpp Src/Graphics/New3D/TextureBank.cpp Src/Pkgs/imgui/imgui_impl_opengl3.cpp
+include Makefiles/Rules.inc
+# No command-line architecture override can accidentally produce Intel binaries.
+override ARCH := -arch arm64 -mmacosx-version-min=26.0
+LDOPT := $(filter-out -s,$(LDOPT))
+MUSASHI_LDFLAGS = -arch arm64 -mmacosx-version-min=26.0 -o $(MUSASHI_OUTFILE) $(OBJ_DIR)/m68kmake.o
+METAL_FLAGS := -std=metal4.0 -mmacosx-version-min=26.0 -fno-fast-math -ffp-contract=off -Werror
+NATIVE_OBJECTS := $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(NATIVE_NAMES)))
+$(OBJ_FILES): Makefiles/Makefile.Metal4 Makefiles/Rules.inc Makefiles/Options.inc
+# The bundled SDL platform backend falls back to SDL_GL_GetDrawableSize even
+# for InitForMetal(). Adapt that size query at compile time, without editing it.
+$(OBJ_DIR)/imgui_impl_sdl2.o: CXXFLAGS += -DSDL_GL_GetDrawableSize=SDL_Metal_GetDrawableSize
+
+.PHONY: emulator check-native check-render-debug pkg
+emulator: $(BIN_DIR)/$(SUPERMODEL_BINARY) $(BUILD_ROOT)/Supermodel.metallib
+pkg:
+	@echo "Metal 4 builds use the external build tree; source-local package staging is disabled."
+	@exit 1
+check-native: $(NATIVE_OBJECTS) $(OBJ_DIR)/New3D.o $(OBJ_DIR)/Crosshair.o $(OBJ_DIR)/Gui.o $(OBJ_DIR)/Main.o $(BUILD_ROOT)/Supermodel.metallib check-render-debug
+check-render-debug: $(PLATFORM_DIRS)
+	$(CXX) $(filter-out -c,$(CXXFLAGS)) -DDEBUG -fsyntax-only Src/OSD/SDL/Main.cpp
+
+$(FRAMEWORK_STAMP): Scripts/prepare-metal4-frameworks.py
+	python3 '$<' '$(BUILD_ROOT)'
+	touch '$@'
+
+$(NATIVE_OBJECTS): $(OBJ_DIR)/%.o: $(NATIVE_DIR)/%.mm $(NATIVE_DIR)/Native.h $(NATIVE_DIR)/ShaderTypes.h | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -fobjc-arc -Wextra -Werror -Wno-unused-parameter -fmodules-cache-path=$(BUILD_ROOT)/ModuleCache -MMD -MP -MF '$(@:.o=.d)' -c '$<' -o '$@'
+
+$(BUILD_ROOT)/%.air: $(NATIVE_DIR)/%.metal $(NATIVE_DIR)/ShaderTypes.h | $(OBJ_DIR)
+	xcrun -sdk macosx metal $(METAL_FLAGS) -c '$<' -o '$@'
+
+$(BUILD_ROOT)/Supermodel.metallib: $(BUILD_ROOT)/Real3D.air $(BUILD_ROOT)/Surface.air
+	xcrun -sdk macosx metal '$<' '$(BUILD_ROOT)/Surface.air' -o '$@'

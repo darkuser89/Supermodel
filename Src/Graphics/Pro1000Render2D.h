@@ -29,7 +29,11 @@
 #ifndef INCLUDED_PRO1000RENDER2D_H
 #define INCLUDED_PRO1000RENDER2D_H
 
+#ifndef SUPERMODEL_METAL4
 #include <GL/glew.h>
+#else
+#include <memory>
+#endif
 #include <cstdint>
 #include "Supermodel.h"
 #include "IRender2D.h"
@@ -50,6 +54,10 @@
 class CPro1000Render2D : public IRender2D
 {
 public:
+#ifdef SUPERMODEL_METAL4
+  CPro1000Render2D();
+  ~CPro1000Render2D() override;
+#endif
   // IRender2D interface
   Result Init(unsigned xOffset, unsigned yOffset, unsigned xRes, unsigned yRes, unsigned totalXRes, unsigned totalYRes, unsigned aaTarget, UpscaleMode upscaleMode) override;
   void BeginFrame(void) override;
@@ -78,6 +86,10 @@ public:
   // BeginFrame(), PreRenderFrame(), EndFrame(): nothing to do.
 
 private:
+#ifdef SUPERMODEL_METAL4
+  struct Native;
+  std::unique_ptr<Native> m_native;
+#endif
   bool LayerEnabled(void) const;
   bool IsBackground(void) const;
   void FillLayer(void);
@@ -89,7 +101,7 @@ private:
   unsigned  m_yOffset = 0;
   unsigned  m_totalXPixels = 0;   // complete display surface
   unsigned  m_totalYPixels = 0;
-  GLuint    m_aaTarget = 0;
+  unsigned  m_aaTarget = 0;
 
   // SCROLL register
   uint32_t  m_scroll = 0;

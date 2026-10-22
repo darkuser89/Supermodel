@@ -24,7 +24,9 @@
 #include "Graphics/New3D/New3D.h"
 #include "OSD/FileSystemPath.h"
 #include "SDLIncludes.h"
+#ifndef SUPERMODEL_METAL4
 #include <GL/glew.h>
+#endif
 #include <vector>
 #include "Inputs/Inputs.h"
 #include "Util/Format.h"
@@ -48,13 +50,27 @@ Result CCrosshair::Init()
   SDL_Surface* surfaceCrosshairP1 = SDL_LoadBMP(p1CrosshairFile.c_str());
   SDL_Surface* surfaceCrosshairP2 = SDL_LoadBMP(p2CrosshairFile.c_str());
   if (surfaceCrosshairP1 == NULL || surfaceCrosshairP2 == NULL)
-      return Result::FAIL;
+  {
+    if (surfaceCrosshairP1) SDL_FreeSurface(surfaceCrosshairP1);
+    if (surfaceCrosshairP2) SDL_FreeSurface(surfaceCrosshairP2);
+    return Result::FAIL;
+  }
 
   m_p1CrosshairW = surfaceCrosshairP1->w;
   m_p1CrosshairH = surfaceCrosshairP1->h;
   m_p2CrosshairW = surfaceCrosshairP2->w;
   m_p2CrosshairH = surfaceCrosshairP2->h;
 
+#ifdef SUPERMODEL_METAL4
+  SDL_Surface* originals[]={surfaceCrosshairP1,surfaceCrosshairP2};
+  for(unsigned player=0;player<2;++player) {
+    SDL_Surface* rgba=SDL_ConvertSurfaceFormat(originals[player],SDL_PIXELFORMAT_RGBA32,0);
+    if(!rgba) {SDL_FreeSurface(surfaceCrosshairP1);SDL_FreeSurface(surfaceCrosshairP2);return Result::FAIL;}
+    bool ok=m_metal->Upload(player,static_cast<const uint8_t*>(rgba->pixels),rgba->w,rgba->h,rgba->pitch);
+    SDL_FreeSurface(rgba);
+    if(!ok) {SDL_FreeSurface(surfaceCrosshairP1);SDL_FreeSurface(surfaceCrosshairP2);return Result::FAIL;}
+  }
+#else
   glGenTextures(2, m_crosshairTexId);
 
   glBindTexture(GL_TEXTURE_2D, m_crosshairTexId[0]);
@@ -69,12 +85,14 @@ Result CCrosshair::Init()
 
   glBindTexture(GL_TEXTURE_2D, 0);
 
+#endif
+
   SDL_FreeSurface(surfaceCrosshairP1);
   SDL_FreeSurface(surfaceCrosshairP2);
 
   // Get DPI
   SDL_GetDisplayDPI(0, &m_diagDpi, &m_hDpi, &m_vDpi);
-  m_dpiMultiplicator = m_hDpi / m_standardDpi;  // note : on linux VM diagdpi returns 0
+  m_dpiMultiplicator = m_hDpi > 0 ? m_hDpi / m_standardDpi : 1.0f;  // note : on linux VM diagdpi returns 0
 
   // 3d obj
   m_uvCoord.emplace_back(0.0f, 0.0f);
@@ -86,6 +104,7 @@ Result CCrosshair::Init()
 
   BuildCrosshairVertices();
 
+#ifndef SUPERMODEL_METAL4
   m_vertexShader = R"glsl(
 
     #version 410 core
@@ -148,6 +167,8 @@ Result CCrosshair::Init()
 
   glBindVertexArray(0);
 
+#endif
+
   return Result::OKAY;
 }
 
@@ -191,7 +212,9 @@ void CCrosshair::DrawCrosshair(New3D::Mat4 matrix, float x, float y, int player,
     count = MaxVerts;       // maybe we could error out somehow
   }
 
+#ifndef SUPERMODEL_METAL4
   m_shader.EnableShader();
+#endif
   matrix.Translate(x, y, 0);
 
   if (!m_isBitmapCrosshair)
@@ -212,6 +235,7 @@ void CCrosshair::DrawCrosshair(New3D::Mat4 matrix, float x, float y, int player,
 
     matrix.Scale(m_dpiMultiplicator, m_dpiMultiplicator * aspect, 0);
 
+#ifndef SUPERMODEL_METAL4
     // update uniform memory
     glUniformMatrix4fv(m_shader.uniformLocMap["mvp"], 1, GL_FALSE, matrix);
     glUniform4f(m_shader.uniformLocMap["colour"], r, g, b, 1.0f);
@@ -220,16 +244,19 @@ void CCrosshair::DrawCrosshair(New3D::Mat4 matrix, float x, float y, int player,
     // update vbo mem
     m_vbo.Bind(true);
     m_vbo.BufferSubData(0, count * sizeof(BasicVertex), m_verts.data());
+#endif
   }
   else
   {
+#ifndef SUPERMODEL_METAL4
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_crosshairTexId[player]);
-
     m_textureCoordsCount = (int)m_uvCoord.size();
+#endif
 
     matrix.Scale(m_dpiMultiplicator * m_scaleBitmap, m_dpiMultiplicator * m_scaleBitmap * aspect, 0);
 
+#ifndef SUPERMODEL_METAL4
     // update uniform memory
     glUniformMatrix4fv(m_shader.uniformLocMap["mvp"], 1, GL_FALSE, matrix);
     glUniform1i(m_shader.uniformLocMap["CrosshairTexture"], 0); // 0 or 1 or GL_TEXTURE0 GL_TEXTURE1
@@ -243,13 +270,21 @@ void CCrosshair::DrawCrosshair(New3D::Mat4 matrix, float x, float y, int player,
     m_textvbo.Bind(true);
     m_textvbo.BufferSubData(0, m_textureCoordsCount * sizeof(UVCoords), m_uvCoord.data());
     m_textvbo.Bind(false);
+#endif
   }
 
+#ifdef SUPERMODEL_METAL4
+  float colour[]={m_isBitmapCrosshair?1.0f:r,m_isBitmapCrosshair?1.0f:g,m_isBitmapCrosshair?1.0f:b,1};
+  m_metal->Draw(reinterpret_cast<const float*>(m_verts.data()),count,
+      reinterpret_cast<const float*>(m_uvCoord.data()),m_uvCoord.size(),matrix,colour,
+      m_isBitmapCrosshair,player,m_xOffset,m_yOffset,xRes,yRes);
+#else
   glBindVertexArray(m_vao);
   glDrawArrays(GL_TRIANGLES, 0, count);
   glBindVertexArray(0);
 
   m_shader.DisableShader();
+#endif
 }
 
 void CCrosshair::Update(uint32_t currentInputs, CInputs* Inputs, unsigned int xOffset, unsigned int yOffset, unsigned int xRes, unsigned int yRes)
@@ -263,6 +298,9 @@ void CCrosshair::Update(uint32_t currentInputs, CInputs* Inputs, unsigned int xO
   if (!crosshairs)
     return;
 
+#ifdef SUPERMODEL_METAL4
+  m_xOffset=xOffset;m_yOffset=yOffset;
+#else
   // Set up the viewport and orthogonal projection
   glUseProgram(0);    // no shaders
   glViewport(xOffset, yOffset, xRes, yRes);
@@ -279,6 +317,7 @@ void CCrosshair::Update(uint32_t currentInputs, CInputs* Inputs, unsigned int xO
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   }
 
+#endif
   New3D::Mat4 m;
   m.Ortho(0.0, 1.0, 1.0, 0.0, -1.0f, 1.0f);
 
@@ -331,9 +370,12 @@ void CCrosshair::GunToViewCoords(float* x, float* y)
 }
 
 CCrosshair::CCrosshair(const Util::Config::Node& config)
-  : m_config(config),
-    m_vertexShader(nullptr),
-    m_fragmentShader(nullptr)
+  : m_config(config)
+#ifdef SUPERMODEL_METAL4
+    ,m_metal(std::make_unique<SupermodelMetal4::CrosshairRenderer>())
+#else
+    ,m_vertexShader(nullptr),m_fragmentShader(nullptr)
+#endif
 {
 }
 

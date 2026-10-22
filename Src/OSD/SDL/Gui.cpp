@@ -1,5 +1,11 @@
 #include "SDLIncludes.h"
+#ifdef SUPERMODEL_METAL4
+#include "Graphics/Metal4/Context.h"
+#include "Graphics/Metal4/Window.h"
+#include "Graphics/Metal4/GuiRenderer.h"
+#else
 #include <GL/glew.h>
+#endif
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +24,9 @@
 #include "GameLoader.h"
 #include "../Pkgs/imgui/imgui.h"
 #include "../Pkgs/imgui/imgui_impl_sdl2.h"
+#ifndef SUPERMODEL_METAL4
 #include "../Pkgs/imgui/imgui_impl_opengl3.h"
+#endif
 #include "../Src/Util/NewConfig.h"
 #include "Util/ConfigBuilders.h"
 #include "../Src/OSD/SDL/SDLInputSystem.h"
@@ -670,7 +678,11 @@ static std::shared_ptr<CInputs> GetInputSystem(Util::Config::Node& config, SDL_W
 
         int x, y, w, h;
         SDL_GetWindowPosition(window, &x, &y);
+#ifdef SUPERMODEL_METAL4
+        SupermodelMetal4::DrawableSize(window,w,h);
+#else
         SDL_GL_GetDrawableSize(window, &w, &h);
+#endif
 
         inputSystem->SetDisplayGeom(x, y, w, h);
         return inputs;
@@ -929,7 +941,9 @@ static void GUI(const ImGuiIO& io, Util::Config::Node& config, const std::map<st
     ImVec4 clear_color = ImVec4(0.0f, 0.5f, 192/255.f, 1.00f);
 
     // Start the Dear ImGui frame
+#ifndef SUPERMODEL_METAL4
     ImGui_ImplOpenGL3_NewFrame();
+#endif
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
@@ -1100,10 +1114,18 @@ static void GUI(const ImGuiIO& io, Util::Config::Node& config, const std::map<st
     // Rendering
     ImGui::Render();
     
+#ifdef SUPERMODEL_METAL4
+    float rgba[]={clear_color.x,clear_color.y,clear_color.z,clear_color.w};
+    if(!SupermodelMetal4::RenderGui(ImGui::GetDrawData(),rgba)) {
+        std::cerr << "Metal 4 GUI: " << SupermodelMetal4::GetContext().Error() << std::endl;
+        exit=true;saveSettings=false;selectedGameIndex=-1;
+    }
+#else
     glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
     glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#endif
 }
 
 static std::string GetRomPath(int selectedGame, const std::map<std::string, Game>& games, const std::string& romDirectory)
@@ -1157,6 +1179,9 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
         return {};
     }
 
+#ifdef SUPERMODEL_METAL4
+    SDL_WindowFlags window_flags=SDL_WindowFlags(SDL_WINDOW_METAL|SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI|SDL_WINDOW_INPUT_FOCUS);
+#else
     // Set OpenGL attributes
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
@@ -1168,6 +1193,8 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_INPUT_FOCUS);
 
+#endif
+
     // Create SDL window
     s_uiScale = GetDPIScale();
     SDL_Window* window = SDL_CreateWindow("SuperSetup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, int(950 * s_uiScale), int(600 * s_uiScale), window_flags);
@@ -1177,6 +1204,12 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
         return {};
     }
 
+#ifdef SUPERMODEL_METAL4
+    if(!SupermodelMetal4::AttachWindow(window)) {
+        std::cerr << "Metal 4 initialization: " << SupermodelMetal4::GetContext().Error() << std::endl;
+        SDL_DestroyWindow(window);SDL_Quit();return {};
+    }
+#else
     // Create OpenGL context
     SDL_GLContext glContext = SDL_GL_CreateContext(window);
     if (!glContext) {
@@ -1188,6 +1221,8 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
 
     SDL_GL_MakeCurrent(window, glContext);
     SDL_GL_SetSwapInterval(1); // Enable vsync
+
+#endif
 
     // Setup ImGui context
     IMGUI_CHECKVERSION();
@@ -1210,8 +1245,21 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
     style.FontScaleDpi = s_uiScale;
 
     // Setup Platform/Renderer backends
+#ifdef SUPERMODEL_METAL4
+    if(!ImGui_ImplSDL2_InitForMetal(window)) {
+        std::cerr << "SDL Metal GUI backend initialization failed." << std::endl;
+        ImGui::DestroyContext();SupermodelMetal4::DetachWindow();
+        SDL_DestroyWindow(window);SDL_Quit();return {};
+    }
+    if(!SupermodelMetal4::InitializeGui()) {
+        std::cerr << "Metal 4 GUI backend: " << SupermodelMetal4::GetContext().Error() << std::endl;
+        ImGui_ImplSDL2_Shutdown();ImGui::DestroyContext();SupermodelMetal4::DetachWindow();
+        SDL_DestroyWindow(window);SDL_Quit();return {};
+    }
+#else
     ImGui_ImplSDL2_InitForOpenGL(window, glContext);
     ImGui_ImplOpenGL3_Init("#version 410");
+#endif
 
     std::string xmlFile = config["GameXMLFile"].ValueAs<std::string>();
     GameLoader loader(xmlFile);
@@ -1261,7 +1309,9 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
 
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
+#ifndef SUPERMODEL_METAL4
         SDL_GL_SwapWindow(window);
+#endif
 
         if (exit) {
             break;
@@ -1288,11 +1338,19 @@ exitNoSave:
     inputs = nullptr;
 
     // Cleanup resources
+#ifdef SUPERMODEL_METAL4
+    SupermodelMetal4::ShutdownGui();
+#else
     ImGui_ImplOpenGL3_Shutdown();
+#endif
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
+#ifdef SUPERMODEL_METAL4
+    SupermodelMetal4::DetachWindow();
+#else
     SDL_GL_DeleteContext(glContext);
+#endif
     SDL_DestroyWindow(window);
     SDL_Quit();
 

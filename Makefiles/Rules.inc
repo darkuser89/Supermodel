@@ -30,8 +30,8 @@
 # Output Locations
 ###############################################################################
 
-OBJ_DIR = obj$(strip $(BITS))
-BIN_DIR = bin$(strip $(BITS))
+OBJ_DIR ?= obj$(strip $(BITS))
+BIN_DIR ?= bin$(strip $(BITS))
 
 SUPERMODEL_BINARY = supermodel$(PLATFORM_BINARY_EXTENSION)
 POWERPC_DISASSEMBLER_BINARY = ppcd$(PLATFORM_BINARY_EXTENSION)
@@ -219,6 +219,11 @@ ifeq ($(strip $(ENABLE_DEBUGGER)),1)
 endif
 
 #
+# Platform backends may replace source files without modifying bundled packages.
+#
+SRC_FILES := $(filter-out $(PLATFORM_EXCLUDE_SRC_FILES),$(SRC_FILES))
+
+#
 # Sorted-path compile order
 #
 OBJ_FILES = $(foreach file,$(SRC_FILES),$(OBJ_DIR)/$(basename $(notdir $(file))).o)
@@ -262,6 +267,7 @@ release:: all
 #
 # Github release flow (not yet used).
 #
+ifeq ($(strip $(PLATFORM_EXTERNAL_BUILD)),)
 # PLATFORM_PKG_FILES are additional platform-specific files. The package puts
 # them next to the Supermodel binary. The platform Makefile must set it before
 # it includes this file.
@@ -301,6 +307,7 @@ pkg/path: set_version
 	$(eval PKG_STAGE_PATH = pkg/supermodel-$(VERSION))
 	$(eval PKG_PATH = pkg/supermodel-$(VERSION).$(PKG_TYPE))
 	@echo $(PKG_PATH)
+endif
 
 #
 # Sets a VERSION variable based on the git sha.
@@ -359,14 +366,14 @@ $(BIN_DIR)/$(SCRIPTS_DISASSEMBLER_BINARY):  $(BIN_DIR) Src/Model3/53C810Disasm.c
 #
 $(BIN_DIR):
 	$(info Creating directory     : $(BIN_DIR))
-	$(SILENT)mkdir $(BIN_DIR)
+	$(SILENT)mkdir -p $(BIN_DIR)
 
 #
 # Object directory
 #
 $(OBJ_DIR): | $(PLATFORM_DIRS)
 	$(info Creating directory     : $(OBJ_DIR))
-	$(SILENT)mkdir $(OBJ_DIR)
+	$(SILENT)mkdir -p $(OBJ_DIR)
 
 
 ###############################################################################

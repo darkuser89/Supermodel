@@ -422,7 +422,17 @@ uint32_t CReal3D::SyncSnapshots(void)
     return 0;
 
   // Update read-only queue
-  queuedUploadTexturesRO = queuedUploadTextures;
+#ifdef SUPERMODEL_METAL4
+  if (!queuedUploadTexturesRO.empty())
+  {
+    // No drawable may have been available, so BeginFrame() did not consume
+    // the previous queue. Refresh from the newest snapshot rather than lose
+    // those updates or grow a backlog while the window remains occluded.
+    queuedUploadTexturesRO.assign(1, QueuedUploadTextures{0, 0, 0, 2048, 2048});
+  }
+  else
+#endif
+    queuedUploadTexturesRO = queuedUploadTextures;
   queuedUploadTextures.clear();
 
   Render3D->SetBlockCulling(m_blockCullingRO);

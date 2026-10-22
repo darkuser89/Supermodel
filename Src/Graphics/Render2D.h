@@ -28,12 +28,16 @@
 #ifndef INCLUDED_RENDER2D_H
 #define INCLUDED_RENDER2D_H
 
+#ifndef SUPERMODEL_METAL4
 #include <GL/glew.h>
+#endif
 #include <memory>
 #include "Supermodel.h"
 #include "Util/NewConfig.h"
+#ifndef SUPERMODEL_METAL4
 #include "New3D/GLSLShader.h"
 #include "FBO.h"
+#endif
 #include "../Model3/TileGenBuffer.h"
 #include "IRender2D.h"
 
@@ -189,8 +193,10 @@ public:
 
 private:
 
+#ifndef SUPERMODEL_METAL4
 	void	Setup2D			(bool isBottom);
 	void	DrawSurface		(GLuint textureID);
+#endif
 
 	// Run-time configuration
 	const Util::Config::Node& m_config;
@@ -203,12 +209,17 @@ private:
 	unsigned  m_totalXPixels = 0;   // total display surface resolution
 	unsigned  m_totalYPixels = 0;
 	unsigned  m_correction = 0;
-	GLuint m_aaTarget = 0;
+	unsigned m_aaTarget = 0;
 	UpscaleMode m_upscaleMode = UpscaleMode::Biquintic;
 
+#ifdef SUPERMODEL_METAL4
+	struct Native;
+	std::unique_ptr<Native> m_native;
+#else
 	GLuint m_vao;
 	GLuint m_textureIDs[2];
 	GLSLShader m_drawShader;
+#endif
 	std::shared_ptr<TileGenBuffer> m_drawBuffers[2];
 };
 

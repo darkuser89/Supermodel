@@ -78,12 +78,26 @@ public:
 
   void RenderFrame(void) override
   {
+#ifdef SUPERMODEL_METAL4
+    if(!BeginFrameVideo()){EndFrameVideo();return;}
+#else
     BeginFrameVideo();
+#endif
     m_tileGen.BeginFrame();
     m_real3D.BeginFrame();
+#ifdef SUPERMODEL_METAL4
+    m_tileGen.PreRenderFrame();
+    m_tileGen.RenderFrameBottom();
+#endif
     m_real3D.RenderFrame();
+#ifdef SUPERMODEL_METAL4
+    m_tileGen.RenderFrameTop();
+#endif
     m_real3D.EndFrame();
     m_tileGen.EndFrame();
+#ifdef SUPERMODEL_METAL4
+    if(m_superAA)m_superAA->Draw();
+#endif
     EndFrameVideo();
   }
 
@@ -110,6 +124,9 @@ public:
     m_tileGen.AttachRenderer(dynamic_cast<CRender2D *>(render2D));
     render3D->SetStepping(m_game.stepping);
     m_real3D.AttachRenderer(render3D);
+#ifdef SUPERMODEL_METAL4
+    m_superAA=superAA;
+#endif
   }
 
   void AttachInputs(CInputs *InputsPtr) override
@@ -161,6 +178,9 @@ public:
   }
 
 private:
+#ifdef SUPERMODEL_METAL4
+  SuperAA*                 m_superAA=nullptr;
+#endif
   const std::string         m_stateFilePath;
   std::shared_ptr<uint8_t>  m_vrom;
   Game                      m_game;

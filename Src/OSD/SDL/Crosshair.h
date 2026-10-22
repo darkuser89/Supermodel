@@ -25,6 +25,9 @@
 #include "Supermodel.h"
 #include "Graphics/New3D/New3D.h"
 #include "Inputs/Inputs.h"
+#ifdef SUPERMODEL_METAL4
+#include "Graphics/Metal4/CrosshairRenderer.h"
+#endif
 
 class CCrosshair
 {
@@ -32,7 +35,9 @@ private:
   const Util::Config::Node& m_config;
   bool m_isBitmapCrosshair = false;
   std::string m_crosshairStyle;
+#ifndef SUPERMODEL_METAL4
   GLuint m_crosshairTexId[2] = {};
+#endif
   int m_p1CrosshairW = 0, m_p1CrosshairH = 0, m_p2CrosshairW = 0, m_p2CrosshairH = 0;
   float m_diagDpi = 0.0f, m_hDpi = 0.0f, m_vDpi = 0.0f;
   const float m_base = 0.01f, m_height = 0.02f; // geometric parameters of each triangle
@@ -58,6 +63,10 @@ private:
   std::vector<BasicVertex> m_verts;
   std::vector<UVCoords> m_uvCoord;
 
+#ifdef SUPERMODEL_METAL4
+  std::unique_ptr<SupermodelMetal4::CrosshairRenderer> m_metal;
+  unsigned m_xOffset=0,m_yOffset=0;
+#else
   GLSLShader m_shader;
   VBO m_vbo;
   VBO m_textvbo;
@@ -65,6 +74,8 @@ private:
   int m_textureCoordsCount = 0;
   const char* m_vertexShader;
   const char* m_fragmentShader;
+
+#endif
 
   const int MaxVerts = 1024;  // per draw call
 

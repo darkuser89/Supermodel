@@ -22,7 +22,8 @@
 /*
 * New3D.h
 *
-* Header file defining the CNew3D class: OpenGL Real3D graphics engine.
+* Header file defining the current Real3D graphics engine.
+* Native Metal 4 on Apple Silicon; OpenGL on other platform builds.
 */
 
 #ifndef INCLUDED_NEW3D_H
@@ -30,21 +31,34 @@
 
 #include <unordered_map>
 #include <atomic>
+#include "Util/NewConfig.h"
+#ifdef SUPERMODEL_METAL4
+#include "Graphics/Metal4/SceneRenderer.h"
+#else
 #include <GL/glew.h>
+#endif
 #include "Types.h"
 #include "Graphics/IRender3D.h"
 #include "Model.h"
 #include "Mat4.h"
+#ifndef SUPERMODEL_METAL4
 #include "R3DShader.h"
 #include "VBO.h"
+#endif
 #include "R3DData.h"
 #include "Plane.h"
 #include "Vec.h"
+#ifndef SUPERMODEL_METAL4
 #include "R3DScrollFog.h"
+#endif
 #include "PolyHeader.h"
+#ifndef SUPERMODEL_METAL4
 #include "R3DFrameBuffers.h"
+#endif
 #include <mutex>
+#ifndef SUPERMODEL_METAL4
 #include "TextureBank.h"
+#endif
 
 namespace New3D {
 
@@ -262,7 +276,9 @@ private:
 	// Misc
 	std::string m_gameName;
 	int m_numPolyVerts;
+#ifndef SUPERMODEL_METAL4
 	GLenum m_primType;
+#endif
 
 	// GPU configuration
 	std::atomic_bool m_sunClamp;
@@ -317,6 +333,10 @@ private:
 	std::vector<FVertex> m_polyBufferRam;		// dynamic polys
 	std::vector<FVertex> m_polyBufferRom;		// rom polys
 	std::unordered_map<UINT32, std::shared_ptr<std::vector<Mesh>>> m_romMap;	// a hash table for all the ROM models. The meshes don't have model matrices or tex offsets yet
+#ifdef SUPERMODEL_METAL4
+	std::unique_ptr<SupermodelMetal4::SceneRenderer> m_metal;
+	unsigned m_aaTarget;
+#else
 	TextureBank			m_textureBank[2];
 
 	GLuint m_vao;
@@ -325,6 +345,8 @@ private:
 	R3DScrollFog m_r3dScrollFog;
 	R3DFrameBuffers m_r3dFrameBuffers;
 	GLuint m_aaTarget;						// optional, maybe zero
+
+#endif
 
 	struct
 	{

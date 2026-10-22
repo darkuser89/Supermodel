@@ -59,23 +59,32 @@ CNew3D::CNew3D(const Util::Config::Node &config, const std::string& gameName) :
 	m_LODBlendTable(nullptr),
 	m_prev{{}},
 	m_prevTexCoords{{}},
+#ifdef SUPERMODEL_METAL4
+	m_metal(std::make_unique<SupermodelMetal4::SceneRenderer>(SupermodelMetal4::GetContext())),
+#else
 	m_vao(0),
 	m_r3dShader(config),
 	m_r3dScrollFog(),
+#endif
 	m_aaTarget(0)
 {
 	m_sunClamp		= true;
 	m_numPolyVerts	= 3;
+#ifndef SUPERMODEL_METAL4
 	m_primType		= GL_TRIANGLES;
+#endif
 
 	if (config["QuadRendering"].ValueAs<bool>()) {
 		m_numPolyVerts	= 4;
+#ifndef SUPERMODEL_METAL4
 		m_primType		= GL_LINES_ADJACENCY;
+#endif
 	}
 
 	m_wideScreen = config["WideScreen"].ValueAs<bool>();
 	m_noWhiteFlash = config["NoWhiteFlash"].ValueAs<bool>();
 
+#ifndef SUPERMODEL_METAL4
 	m_r3dShader.LoadShader();
 	glUseProgram(0);
 
@@ -105,10 +114,12 @@ CNew3D::CNew3D(const Util::Config::Node &config, const std::string& gameName) :
 
 	glBindVertexArray(0);
 	m_vbo.Bind(false);
+#endif
 }
 
 CNew3D::~CNew3D()
 {
+#ifndef SUPERMODEL_METAL4
 	m_vbo.Destroy();
 	if (m_vao) {
 		glDeleteVertexArrays(1, &m_vao);
@@ -116,6 +127,7 @@ CNew3D::~CNew3D()
 	}
 
 	m_r3dShader.UnloadShader();
+#endif
 }
 
 void CNew3D::AttachMemory(const UINT32 *cullingRAMLoPtr, const UINT32 *cullingRAMHiPtr, const UINT32 *polyRAMPtr, const UINT32 *vromPtr, const UINT16 *textureRAMPtr)
@@ -126,8 +138,10 @@ void CNew3D::AttachMemory(const UINT32 *cullingRAMLoPtr, const UINT32 *cullingRA
 	m_vrom			= vromPtr;
 	m_textureRAM	= textureRAMPtr;
 
+#ifndef SUPERMODEL_METAL4
 	m_textureBank[0].AttachMemory(textureRAMPtr);
 	m_textureBank[1].AttachMemory(textureRAMPtr + (2048*1024));
+#endif
 }
 
 void CNew3D::SetStepping(Game::Stepping stepping)
@@ -180,13 +194,33 @@ Result CNew3D::Init(unsigned xOffset, unsigned yOffset, unsigned xRes, unsigned 
 	m_totalYRes = totalYResParam;
 	m_aaTarget	= aaTarget;
 
+#ifdef SUPERMODEL_METAL4
+	return m_metal->Resize(totalXResParam, totalYResParam) ? Result::OKAY : Result::FAIL;
+#else
 	m_r3dFrameBuffers.DestroyFBO();		// remove any old ones if created
 
 	return m_r3dFrameBuffers.CreateFBO(totalXResParam, totalYResParam);
+#endif
 }
 
 void CNew3D::UploadTextures(unsigned level, unsigned x, unsigned y, unsigned width, unsigned height)
 {
+#ifdef SUPERMODEL_METAL4
+    if (width == 2048 && height == 2048) {
+        static constexpr unsigned mipX[] = {0,1024,1536,1792,1920,1984,2016,2032,2040,2044,2046};
+        static constexpr unsigned mipY[] = {0,512,768,896,960,992,1008,1016,1020,1022,1023};
+        width=2048; height=1024;
+        for (unsigned mip=0;mip<11;++mip) {
+            for (unsigned page=0;page<2;++page)
+                m_metal->UploadTextures(page,mip,mipX[mip],mipY[mip],width,height,m_textureRAM+page*2048*1024);
+            width=std::max(1u,width/2); height=std::max(1u,height/2);
+        }
+        return;
+    }
+    int page;
+    TranslateTexture(x,y,width,height,page);
+    m_metal->UploadTextures(page,level,x,y,width,height,m_textureRAM+page*2048*1024);
+#else
 	// handle case of entire sheet invalidation
 	if (width == 2048 && height == 2048) {
 
@@ -209,6 +243,7 @@ void CNew3D::UploadTextures(unsigned level, unsigned x, unsigned y, unsigned wid
 	TranslateTexture(x, y, width, height, page);
 
 	m_textureBank[page].UploadTextures(level, x, y, width, height);
+#endif
 }
 
 void CNew3D::DrawScrollFog()
@@ -288,9 +323,12 @@ void CNew3D::DrawScrollFog()
 
 					float fogAttentuation = (fog && spotlightFog) ? 0.0f : n.viewport.fogAttenuation;	// if regular fog is enabled h/w seems to only apply this and skip the spotlight on fog (ECA)
 
-					glViewport(vp.x, vp.y, vp.width, vp.height);
-
-					m_r3dScrollFog.DrawScrollFog(rgba, fogAttentuation, n.viewport.fogAmbient, n.viewport.spotFogColor, n.viewport.spotEllipse);
+#ifdef SUPERMODEL_METAL4
+                    m_metal->Fog(vp,rgba,fogAttentuation,n.viewport.fogAmbient,n.viewport.spotFogColor,n.viewport.spotEllipse);
+#else
+                    glViewport(vp.x, vp.y, vp.width, vp.height);
+                    m_r3dScrollFog.DrawScrollFog(rgba, fogAttentuation, n.viewport.fogAmbient, n.viewport.spotFogColor, n.viewport.spotEllipse);
+#endif
 					break;
 				}
 			}
@@ -356,13 +394,37 @@ void CNew3D::DrawAmbientFog()
 	if (nodePtr) {
 		auto& vp = nodePtr->viewport;
 		float rgba[] = { 0.0f, 0.0f, 0.0f, 1.0f - fogAmbient };
-		glViewport(vp.x, vp.y, vp.width, vp.height);
-		m_r3dScrollFog.DrawScrollFog(rgba, 0.0f, 1.0f, vp.spotFogColor, vp.spotEllipse); // we assume spot light is not used
+#ifdef SUPERMODEL_METAL4
+        m_metal->Fog(vp,rgba,0.0f,1.0f,vp.spotFogColor,vp.spotEllipse);
+#else
+        glViewport(vp.x, vp.y, vp.width, vp.height);
+        m_r3dScrollFog.DrawScrollFog(rgba, 0.0f, 1.0f, vp.spotFogColor, vp.spotEllipse);
+#endif
 	}
 }
 
 bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 {
+#ifdef SUPERMODEL_METAL4
+
+    bool hasOverlay=false;
+    for (auto& n:m_nodes) {
+        if (n.viewport.priority!=priority || n.models.empty()) continue;
+        CalcViewport(&n.viewport);
+        for (int layeredPass=0;layeredPass<2;++layeredPass) {
+            for (auto& model:n.models) {
+                if (model.meshes->empty()) continue;
+                for (auto& mesh:*model.meshes) {
+                    if (mesh.highPriority) hasOverlay=true;
+                    if (mesh.layered!=(layeredPass==1) || !mesh.Render(layer,model.alpha) ||
+                        mesh.highPriority!=renderOverlay) continue;
+                    if (!m_metal->Draw(n.viewport,model,mesh)) return hasOverlay;
+                }
+            }
+        }
+    }
+    return hasOverlay;
+#else
 	glActiveTexture(GL_TEXTURE0);
 	m_textureBank[0].Bind();
 	glActiveTexture(GL_TEXTURE1);
@@ -417,6 +479,7 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 	}
 
 	return hasOverlay;
+#endif
 }
 
 bool CNew3D::SkipLayer(int layer)
@@ -434,6 +497,9 @@ bool CNew3D::SkipLayer(int layer)
 
 void CNew3D::SetRenderStates()
 {
+#ifdef SUPERMODEL_METAL4
+// Native depth/stencil/pipeline state is set explicitly for each draw.
+#else
 	m_vbo.Bind(true);
 	glBindVertexArray(m_vao);
 
@@ -450,20 +516,81 @@ void CNew3D::SetRenderStates()
 
 	glBlendFunc		(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glDisable		(GL_BLEND);
+#endif
 }
 
 void CNew3D::DisableRenderStates()
 {
+#ifdef SUPERMODEL_METAL4
+    m_metal->EndLayer();
+#else
 	m_vbo.Bind(false);
 	glBindVertexArray(0);
 
 	m_r3dShader.SetShader(false);
 
 	glDisable(GL_STENCIL_TEST);
+#endif
 }
 
 void CNew3D::RenderFrame(void)
 {
+#ifdef SUPERMODEL_METAL4
+
+    {
+        std::lock_guard<std::mutex> guard(m_losMutex);
+        std::swap(m_losBack,m_losFront);
+        for(int i=0;i<4;++i) m_losBack->value[i]=0;
+    }
+    m_polyBufferRam.clear();m_nodes.clear();m_modelMat.Release();m_nodeAttribs.Reset();
+    if (m_blockCulling && !m_noWhiteFlash) {m_metal->WhiteFlash();return;}
+    // Keep cached ROM meshes below the shared RAM-offset boundary. New3D's
+    // OpenGL backend performs the corresponding cache reset at this capacity.
+    if(m_polyBufferRom.size()>=MAX_ROM_VERTS){m_polyBufferRom.clear();m_romMap.clear();m_metal->InvalidateRomCache();}
+    RenderViewport(0x800000);
+    // Keep geometry traversal and LOS semantics. Only omit GPU colour work when
+    // a fully opaque top tile plane covers every pixel the 3D mixer can write.
+    // Any viewport with a visibility query retains the complete render path.
+    bool needsSceneLos=false;
+    for (const auto& node:m_nodes)
+        needsSceneLos|=node.viewport.losPosX || node.viewport.losPosY;
+    if (m_metal->IsOccluded() && !needsSceneLos) return;
+    if(!m_metal->BeginScene(m_polyBufferRom.data(),m_polyBufferRom.size(),
+        m_polyBufferRam.data(),m_polyBufferRam.size(),m_numPolyVerts==4,!needsSceneLos)) return;
+    DrawAmbientFog();DrawScrollFog();
+    for(int priority=0;priority<4;++priority) {
+        if(SkipLayer(priority))continue;
+        bool trans1[2]={},trans2[2]={},needsLos=false;
+        for (auto& node:m_nodes) {
+            if (node.viewport.priority!=priority) continue;
+            needsLos|=node.viewport.losPosX || node.viewport.losPosY;
+            for (auto& model:node.models) for (auto& mesh:*model.meshes) {
+                unsigned overlay=mesh.highPriority?1:0;
+                trans1[overlay]|=mesh.Render(Layer::trans1,model.alpha);
+                trans2[overlay]|=mesh.Render(Layer::trans2,model.alpha);
+            }
+        }
+        for(int overlay=0;overlay<2;++overlay) {
+            if(!m_metal->BeginLayer(0,true))return;
+            bool hasOverlay=RenderScene(priority,overlay!=0,Layer::colour);
+            m_metal->EndLayer();
+            // Preserve the opaque depth snapshot only when a second
+            // transparency pass or this priority's LOS query consumes it.
+            if ((trans2[overlay] || (!overlay && needsLos)) && !m_metal->StoreDepth())return;
+            if (trans1[overlay]) {
+                if(!m_metal->BeginLayer(1,false))return;
+                RenderScene(priority,overlay!=0,Layer::trans1);m_metal->EndLayer();
+            }
+            if (trans2[overlay]) {
+                if(!m_metal->BeginLayer(2,false))return;
+                RenderScene(priority,overlay!=0,Layer::trans2);m_metal->EndLayer();
+            }
+            if(!overlay)ProcessLos(priority);
+            if(!hasOverlay)break;
+        }
+    }
+    m_metal->Composite();
+#else
 	{
 		std::lock_guard<std::mutex> guard(m_losMutex);
 		std::swap(m_losBack, m_losFront);
@@ -581,6 +708,7 @@ void CNew3D::RenderFrame(void)
 	if (m_aaTarget) {
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	}
+#endif
 }
 
 void CNew3D::BeginFrame(void)
@@ -807,7 +935,9 @@ void CNew3D::DescendCullingNode(UINT32 addr)
 		}
 	}
 
-	m_nodeAttribs.Push();	// save current attribs
+	if (!m_nodeAttribs.Push()) {
+		return; // Do not later pop an outer frame when the bounded stack is full.
+	}
 
 	if (!m_offset) {		// Step 1.5+
 
@@ -999,11 +1129,11 @@ Matrix Stack
 */
 void CNew3D::MultMatrix(UINT32 matrixOffset, Mat4& mat)
 {
-	GLfloat		m[4*4];
-	const float	*src = &m_matrixBasePtr[matrixOffset * 12];
-
-	if (m_matrixBasePtr == NULL)	// LA Machineguns
+	float		m[4*4];
+	if (m_matrixBasePtr == nullptr)	// LA Machineguns
 		return;
+
+	const float	*src = &m_matrixBasePtr[matrixOffset * 12];
 
 	m[CMINDEX(0, 0)] = src[3];
 	m[CMINDEX(0, 1)] = src[4];
@@ -1033,7 +1163,7 @@ void CNew3D::MultInverseMatrix(UINT32 matrixOffset, Mat4& mat)
 	}
 
 	const float* src = &m_matrixBasePtr[matrixOffset * 12];		// t = src[0..2], R rows = src[3..5], src[6..8], src[9..11]
-	GLfloat inv[16];
+	float inv[16];
 
 	for (int r = 0; r < 3; r++) {
 		for (int c = 0; c < 3; c++) {
@@ -1082,7 +1212,7 @@ void CNew3D::MultInverseMatrix(UINT32 matrixOffset, Mat4& mat)
 
 void CNew3D::InitMatrixStack(UINT32 matrixBaseAddr, UINT32 envIdx, Mat4& mat)
 {
-	GLfloat m[4 * 4];
+	float m[4 * 4];
 
 	// This matrix converts vectors back from the weird Model 3 Z,X,Y ordering
 	// and also into OpenGL viewspace (-Y,-Z)
@@ -1153,7 +1283,7 @@ void CNew3D::SaveCoordSysRot()
 // Draws viewports of the given priority
 void CNew3D::RenderViewport(UINT32 addr)
 {
-	static const GLfloat	color[8][3] =
+	static const float	color[8][3] =
 	{											// RGB1 color translation
 		{ 0.0f, 0.0f, 0.0f },	// off
 		{ 0.0f, 0.0f, 1.0f },	// blue
@@ -1465,7 +1595,7 @@ void CNew3D::CacheModel(Model *m, const UINT32 *data)
 		return;
 	}
 
-	UINT16			texCoords[4][2];
+	UINT16			texCoords[4][2] = {};
 	PolyHeader		ph;
 	UINT64			lastHash	= -1;
 	SortingMesh*	currentMesh = nullptr;
@@ -1483,7 +1613,7 @@ void CNew3D::CacheModel(Model *m, const UINT32 *data)
 	// Cache all polygons
 	do {
 
-		R3DPoly		p;					// current polygon
+		R3DPoly		p = {};					// current polygon; define unused attributes too
 		float		uvScale;
 
 		if (ph.header[6] == 0) {
@@ -1820,9 +1950,15 @@ bool CNew3D::ProcessLos(int priority)
 				int losX, losY;
 				TranslateLosPosition(n.viewport.losPosX, n.viewport.losPosY, losX, losY);
 
-				float range[2];
-				glReadPixels(losX, losY, 1, 1, GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, range);
-				GLubyte stencilVal = Util::FloatAsInt32(range[1]);
+#ifdef SUPERMODEL_METAL4
+                float range[2]={};
+                uint8_t stencilVal=0;
+                if(!m_metal->ReadLos(losX,losY,range[0],stencilVal))return false;
+#else
+                float range[2];
+                glReadPixels(losX, losY, 1, 1, GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, range);
+                GLubyte stencilVal = Util::FloatAsInt32(range[1]);
+#endif
 
 				float zVal = range[0] / NEAR_PLANE;
 

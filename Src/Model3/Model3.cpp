@@ -219,6 +219,10 @@
 #include <cstdlib>
 #include <cstring>
 #include "Supermodel.h"
+#ifdef SUPERMODEL_METAL4
+#include "Graphics/Metal4/Benchmark.h"
+#include <pthread/qos.h>
+#endif
 #include "DriveBoard/BillBoard.h"
 #include "DriveBoard/JoystickBoard.h"
 #include "DriveBoard/SkiBoard.h"
@@ -1971,6 +1975,9 @@ void CModel3::RunFrame(void)
     // Render frame
     RenderFrame();
 
+#ifdef SUPERMODEL_METAL4
+    uint64_t waitBegin=SupermodelMetal4::Stages().enabled?SupermodelMetal4::WallTime():0;
+#endif
     // Enter notify wait critical section
     if (!notifyLock->Lock())
       goto ThreadError;
@@ -1991,6 +1998,9 @@ void CModel3::RunFrame(void)
     if (!notifyLock->Unlock())
       goto ThreadError;
 
+#ifdef SUPERMODEL_METAL4
+    if(waitBegin)SupermodelMetal4::Stages().wait=double(SupermodelMetal4::WallTime()-waitBegin)/1e6;
+#endif
     // If multi-threading GPU, then sync GPUs last while PPC main board thread is waiting
     if (m_gpuMultiThreaded)
       SyncGPUs();
@@ -2044,6 +2054,10 @@ static unsigned GetCPUClockFrequencyInHz(const Game &game, Util::Config::Node &c
 
 void CModel3::RunMainBoardFrame(void)
 {
+#ifdef SUPERMODEL_METAL4
+    uint64_t wallBegin=SupermodelMetal4::Stages().enabled?SupermodelMetal4::WallTime():0;
+    uint64_t cpuBegin=wallBegin?SupermodelMetal4::CPUTime():0;
+#endif
 	UINT32 start = CThread::GetTicks();
 
 	/* 
@@ -2144,11 +2158,20 @@ void CModel3::RunMainBoardFrame(void)
         ppc_execute(lineCycles);
     }
 
+#ifdef SUPERMODEL_METAL4
+    if(wallBegin) {
+        SupermodelMetal4::Stages().ppc=double(SupermodelMetal4::WallTime()-wallBegin)/1e6;
+        SupermodelMetal4::Stages().ppcCPU=double(SupermodelMetal4::CPUTime()-cpuBegin)/1e6;
+    }
+#endif
 	timings.ppcTicks = CThread::GetTicks() - start;
 }
 
 void CModel3::SyncGPUs(void)
 {
+#ifdef SUPERMODEL_METAL4
+  SupermodelMetal4::StageTimer stage(SupermodelMetal4::Stages().sync);
+#endif
   UINT32 start = CThread::GetTicks();
 
   timings.syncSize = GPU.SyncSnapshots() + TileGen.SyncSnapshots();
@@ -2159,6 +2182,9 @@ void CModel3::SyncGPUs(void)
 
 void CModel3::RenderFrame(void)
 {
+#ifdef SUPERMODEL_METAL4
+  SupermodelMetal4::StageTimer stage(SupermodelMetal4::Stages().render);
+#endif
   UINT32 start = CThread::GetTicks();
 
   // Call OSD video callbacks
@@ -2501,6 +2527,15 @@ int CModel3::StartDriveBoardThread(void *data)
 
 int CModel3::RunMainBoardThread(void)
 {
+#ifdef SUPERMODEL_METAL4
+  // Each PPC frame is a dependency of the interactive video frame. SDL's
+  // default pthread attributes otherwise classify it as ordinary work.
+  qos_class_t previousQoS=qos_class_self();
+  int qosError=pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
+  if (qosError) ErrorLog("Cannot classify MainBoard interactive work: %d",qosError);
+  if (SupermodelMetal4::Stages().enabled)
+    InfoLog("Metal4 MainBoard QoS: before=%u after=%u result=%d",unsigned(previousQoS),unsigned(qos_class_self()),qosError);
+#endif
   for (;;)
   {
     bool wait = true;

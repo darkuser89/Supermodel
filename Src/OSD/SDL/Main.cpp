@@ -72,7 +72,13 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#ifdef SUPERMODEL_METAL4
+#include "Graphics/Metal4/Context.h"
+#include "Graphics/Metal4/Benchmark.h"
+#include "Graphics/Metal4/Window.h"
+#else
 #include <GL/glew.h>
+#endif
 
 #ifdef SUPERMODEL_WIN32
 #include "DirectInputSystem.h"
@@ -100,7 +106,9 @@
 #include "Graphics/IRender2D.h"
 #include "OSD/Audio.h"
 #include "OSD/ConsoleInput.h"
+#ifndef SUPERMODEL_METAL4
 #include "Graphics/New3D/VBO.h"
+#endif
 #include "Graphics/SuperAA.h"
 #include "Sound/MPEG/MpegAudio.h"
 
@@ -148,12 +156,19 @@ static CRTcolor CRTcolors = CRTcolor::None; // default to no gamma/color adaptio
  */
 static CCrosshair* s_crosshair = nullptr;
 
-static Result SetGLGeometry(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio)
+static Result SetVideoGeometry(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio)
 {
   // What resolution did we actually get?
   int actualWidth;
   int actualHeight;
+#ifdef SUPERMODEL_METAL4
+  SupermodelMetal4::DrawableSize(s_window,actualWidth,actualHeight);
+  *xResPtr=actualWidth;*yResPtr=actualHeight;
+  if(!SupermodelMetal4::ResizeWindow(s_window,s_runtime_config["VSync"].ValueAsDefault<bool>(false)))
+    return ErrorLog("Metal 4 resize: %s",SupermodelMetal4::GetContext().Error().c_str());
+#else
   SDL_GetWindowSize(s_window, &actualWidth, &actualHeight);
+#endif
   *totalXResPtr = actualWidth;
   *totalYResPtr = actualHeight;
 
@@ -179,6 +194,7 @@ static Result SetGLGeometry(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned
   if (int(*yResPtr) < actualHeight)
     *yOffsetPtr += (actualHeight - *yResPtr)/2;
 
+#ifndef SUPERMODEL_METAL4
   // OpenGL initialization
   glViewport(0,0,*xResPtr,*yResPtr);
   glClearColor(0.0,0.0,0.0,0.0);
@@ -194,12 +210,22 @@ static Result SetGLGeometry(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned
     SDL_GL_SwapWindow(s_window);
   }
 
+#endif
+
   // Write back resolution parameters
   *xResPtr = (unsigned) xResF;
   *yResPtr = (unsigned) yResF;
 
   UINT32 correction = (UINT32)(((*yResPtr / 384.) * 2.) + 0.5); // due to the 2D layer compensation (2 pixels off)
 
+#ifdef SUPERMODEL_METAL4
+  unsigned clipX=s_runtime_config["WideScreen"].ValueAsDefault<bool>(false)?0:*xOffsetPtr+correction;
+  unsigned clipY=s_runtime_config["WideScreen"].ValueAsDefault<bool>(false)?correction:*yOffsetPtr+correction;
+  unsigned clipW=s_runtime_config["WideScreen"].ValueAsDefault<bool>(false)?*totalXResPtr:*xResPtr-2*correction;
+  unsigned clipH=s_runtime_config["WideScreen"].ValueAsDefault<bool>(false)?*totalYResPtr-2*correction:*yResPtr-2*correction;
+  if(!SupermodelMetal4::SetClip(clipX*aaValue,clipY*aaValue,clipW*aaValue,clipH*aaValue,*totalXResPtr*aaValue,*totalYResPtr*aaValue))
+    return ErrorLog("Metal 4 clipping: %s",SupermodelMetal4::GetContext().Error().c_str());
+#else
   glEnable(GL_SCISSOR_TEST);
 
   // Scissor box (to clip visible area)
@@ -211,6 +237,7 @@ static Result SetGLGeometry(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned
   {
     glScissor((*xOffsetPtr + correction) * aaValue, (*yOffsetPtr + correction) * aaValue, (*xResPtr - (correction * 2)) * aaValue, (*yResPtr - (correction * 2)) * aaValue);
   }
+#endif
   return Result::OKAY;
 }
 
@@ -258,7 +285,7 @@ static void SetFullScreenRefreshRate()
 }
 
 /*
- * CreateGLScreen():
+ * CreateVideoScreen():
  *
  * Creates an OpenGL display surface of the requested size. xOffset and yOffset
  * are used to return a display surface offset (for OpenGL viewport commands)
@@ -269,16 +296,27 @@ static void SetFullScreenRefreshRate()
  * NOTE: keepAspectRatio should always be true. It has not yet been tested with
  * the wide screen hack.
  */
-static Result CreateGLScreen(bool coreContext, const std::string &caption, bool focusWindow, unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
+static Result CreateVideoScreen(bool coreContext, const std::string &caption, bool focusWindow, unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
 {
+#ifdef SUPERMODEL_METAL4
+  if(s_window)return ErrorLog("Video window already created");
+  if(SDL_Init(SDL_INIT_VIDEO)!=0)return ErrorLog("SDL video initialization: %s",SDL_GetError());
+  s_window=SDL_CreateWindow(caption.c_str(),SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,*xResPtr,*yResPtr,
+    SDL_WINDOW_METAL|SDL_WINDOW_ALLOW_HIGHDPI|SDL_WINDOW_SHOWN|(fullScreen?SDL_WINDOW_FULLSCREEN:0));
+  if(!s_window)return ErrorLog("Metal window creation: %s",SDL_GetError());
+  if(!SupermodelMetal4::AttachWindow(s_window))
+    return ErrorLog("Metal 4 initialization: %s",SupermodelMetal4::GetContext().Error().c_str());
+  if(focusWindow)SDL_RaiseWindow(s_window);
+  return SetVideoGeometry(xOffsetPtr,yOffsetPtr,xResPtr,yResPtr,totalXResPtr,totalYResPtr,keepAspectRatio);
+#else
   GLenum err;
 
   // Call only once per program session (this is because of issues with
   // DirectInput when the window is destroyed and a new one created). Use
-  // ResizeGLScreen() to change resolutions instead.
+  // ResizeVideoScreen() to change resolutions instead.
   if (s_window != nullptr)
   {
-    return ErrorLog("Internal error: CreateGLScreen() called more than once");
+    return ErrorLog("Internal error: CreateVideoScreen() called more than once");
   }
 
   // Initialize video subsystem
@@ -362,19 +400,25 @@ static Result CreateGLScreen(bool coreContext, const std::string &caption, bool 
   //glDebugMessageControl(GL_DONT_CARE,GL_DONT_CARE,GL_DONT_CARE, 0, 0, GL_TRUE);
   //glEnable(GL_DEBUG_OUTPUT);
 
-  return SetGLGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
+  return SetVideoGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
+#endif
 }
 
-static void DestroyGLScreen()
+static void DestroyVideoScreen()
 {
   if (s_window != nullptr)
   {
+#ifdef SUPERMODEL_METAL4
+    SupermodelMetal4::DetachWindow();
+#else
     SDL_GL_DeleteContext(SDL_GL_GetCurrentContext());
+#endif
     SDL_DestroyWindow(s_window);
+    s_window=nullptr;
   }
 }
 
-static Result ResizeGLScreen(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
+static Result ResizeVideoScreen(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
 {
   // Set full screen mode
   if (SDL_SetWindowFullscreen(s_window, fullScreen ? SDL_WINDOW_FULLSCREEN : 0) < 0)
@@ -383,21 +427,28 @@ static Result ResizeGLScreen(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigne
     return Result::FAIL;
   }
 
-  return SetGLGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
+  return SetVideoGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
 }
 
 /*
- * PrintGLInfo():
+ * PrintGraphicsInfo():
  *
  * Queries and prints OpenGL information. A full list of extensions can
  * optionally be printed.
  */
-static void PrintGLInfo(bool createScreen, bool infoLog, bool printExtensions)
+static void PrintGraphicsInfo(bool createScreen, bool infoLog, bool printExtensions)
 {
+#ifdef SUPERMODEL_METAL4
+  unsigned xo,yo,xr=496,yr=384,tx,ty;
+  if(createScreen && Result::OKAY!=CreateVideoScreen(true,"Supermodel - Metal 4",false,&xo,&yo,&xr,&yr,&tx,&ty,false,false))return;
+  std::string name=SupermodelMetal4::GetContext().DeviceName();
+  if(infoLog)InfoLog("Renderer: New3D / native Metal 4 / %s / arm64",name.c_str());
+  else printf("Renderer: New3D / native Metal 4 / %s / arm64\n",name.c_str());
+#else
   unsigned xOffset, yOffset, xRes=496, yRes=384, totalXRes, totalYRes;
   if (createScreen)
   {
-    if (Result::OKAY != CreateGLScreen(s_runtime_config["New3DEngine"].ValueAs<bool>(), "Supermodel - Querying OpenGL Information...", false, &xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, false, false))
+    if (Result::OKAY != CreateVideoScreen(s_runtime_config["New3DEngine"].ValueAs<bool>(), "Supermodel - Querying OpenGL Information...", false, &xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, false, false))
     {
       ErrorLog("Unable to query OpenGL.\n");
       return;
@@ -459,6 +510,7 @@ static void PrintGLInfo(bool createScreen, bool infoLog, bool printExtensions)
   }
   if (infoLog)  InfoLog("");
   else      printf("\n");
+#endif
 }
 
 #ifdef DEBUG
@@ -543,11 +595,22 @@ static void DumpPPCRegisters(IBus *bus)
 }
 #endif
 
-static void SaveFrameBuffer(const std::string& file)
+static bool SaveFrameBuffer(const std::string& file)
 {
+#ifdef SUPERMODEL_METAL4
+    std::vector<uint8_t> pixels;uint32_t width=0,height=0;
+    if(!SupermodelMetal4::GetContext().ReadRGBA(pixels,width,height)) {
+        const std::string error=SupermodelMetal4::GetContext().Error();
+        if(error.empty()) ErrorLog("No completed Metal 4 frame available for screenshot.");
+        else ErrorLog("Metal screenshot: %s",error.c_str());
+        return false;
+    }
+    return !Util::WriteSurfaceToBMP<Util::RGBA8>(file,pixels.data(),width,height,false);
+#else
     std::shared_ptr<uint8_t> pixels(new uint8_t[totalXRes * totalYRes * 4], std::default_delete<uint8_t[]>());
     glReadPixels(0, 0, totalXRes, totalYRes, GL_RGBA, GL_UNSIGNED_BYTE, pixels.get());
-    Util::WriteSurfaceToBMP<Util::RGBA8>(file, pixels.get(), totalXRes, totalYRes, true);
+    return !Util::WriteSurfaceToBMP<Util::RGBA8>(file, pixels.get(), totalXRes, totalYRes, true);
+#endif
 }
 
 void Screenshot()
@@ -570,8 +633,8 @@ void Screenshot()
         << std::setw(2) << ltm->tm_sec
         << ").bmp";
 
-    std::cout << "Screenshot created: " << file << std::endl;
-    SaveFrameBuffer(file);
+    if(SaveFrameBuffer(file))
+        std::cout << "Screenshot created: " << file << std::endl;
 }
 
 /******************************************************************************
@@ -626,9 +689,11 @@ static void TestPolygonHeaderBits(IEmulator *Emu)
     0x00000000
   };
 
+#ifndef SUPERMODEL_METAL4
   GLint readBuffer;
   glGetIntegerv(GL_READ_BUFFER, &readBuffer);
   glReadBuffer(GL_FRONT);
+#endif
 
   // Render separate image for each unknown bit
   s_runtime_config.Set("Debug/ForceFlushModels", true);
@@ -664,7 +729,9 @@ static void TestPolygonHeaderBits(IEmulator *Emu)
     }
   }
 
+#ifndef SUPERMODEL_METAL4
   glReadBuffer(readBuffer);
+#endif
 
   // Generate the HTML GUI
   std::string file = Util::Format() << k_gfxAnalysisPath << "_" << GetFileBaseName(s_gfxStatePath) << ".html";
@@ -704,11 +771,11 @@ static const int STATE_FILE_VERSION = 6;  // save state file version
 static const int NVRAM_FILE_VERSION = 0;  // NVRAM file version
 static unsigned s_saveSlot = 0;           // save state slot #
 
-static void SaveState(IEmulator *Model3)
+static void SaveState(IEmulator *Model3, const std::string &output = std::string())
 {
   CBlockFile  SaveState;
 
-  std::string file_path = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << Model3->GetGame().name << ".st" << s_saveSlot;
+  std::string file_path = output.empty() ? std::string(Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << Model3->GetGame().name << ".st" << s_saveSlot) : output;
   if (Result::OKAY != SaveState.Create(file_path, "Supermodel Save State", "Supermodel Version " SUPERMODEL_VERSION))
   {
     ErrorLog("Unable to save state to '%s'.", file_path.c_str());
@@ -847,17 +914,32 @@ static uint32_t currentInputs = 0;
 
 bool BeginFrameVideo()
 {
+#ifdef SUPERMODEL_METAL4
+  bool ready=SupermodelMetal4::GetContext().BeginFrame();
+  if(!ready && !SupermodelMetal4::GetContext().Error().empty())
+    ErrorLog("Metal 4 frame: %s",SupermodelMetal4::GetContext().Error().c_str());
+  return ready;
+#else
   return true;
+#endif
 }
 
 void EndFrameVideo()
 {
+#ifdef SUPERMODEL_METAL4
+  if(!SupermodelMetal4::GetContext().IsFrameActive())return;
+#endif
   // Show crosshairs for light gun games
   if (videoInputs)
     s_crosshair->Update(currentInputs, videoInputs, xOffset, yOffset, xRes, yRes);
 
   // Swap the buffers
+#ifdef SUPERMODEL_METAL4
+  if(!SupermodelMetal4::GetContext().SubmitFrame())
+    ErrorLog("Metal 4 submission: %s",SupermodelMetal4::GetContext().Error().c_str());
+#else
   SDL_GL_SwapWindow(s_window);
+#endif
 }
 
 
@@ -936,6 +1018,10 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
   bool        quit = false;
   bool        paused = false;
   bool        dumpTimings = false;
+  bool        rendererFailed = false;
+#ifdef SUPERMODEL_METAL4
+  SupermodelMetal4::FrameBenchmark benchmark;
+#endif
 
   // Initialize and load ROMs
   if (Result::OKAY != Emu->Init(game, *rom_set))
@@ -970,11 +1056,11 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
 
   bool stretch = s_runtime_config["Stretch"].ValueAs<bool>();
   bool fullscreen = s_runtime_config["FullScreen"].ValueAs<bool>();
-  if (Result::OKAY != ResizeGLScreen(&xOffset, &yOffset ,&xRes, &yRes, &totalXRes, &totalYRes, !stretch, fullscreen))
+  if (Result::OKAY != ResizeVideoScreen(&xOffset, &yOffset ,&xRes, &yRes, &totalXRes, &totalYRes, !stretch, fullscreen))
     return 1;
 
   // Info log GL information
-  PrintGLInfo(false, true, false);
+  PrintGraphicsInfo(false, true, false);
 
   // Initialize audio system
   SetAudioType(game.audio);
@@ -1055,15 +1141,37 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
 #endif
   while (!quit)
   {
+#ifdef SUPERMODEL_METAL4
+    SupermodelMetal4::SetGameActive(!paused);
+    SupermodelMetal4::GetContext().SetPresentationInterval(
+        paused || s_runtime_config["Throttle"].ValueAs<bool>()
+            ? double(perfCountPerFrame)/double(s_perfCounterFrequency):0);
+    uint64_t frameBegin=SDL_GetPerformanceCounter();
+    uint64_t cpuBegin=SupermodelMetal4::Stages().enabled?SupermodelMetal4::CPUTime():0;
+#endif
     // Poll the inputs
     if (!Inputs->Poll(&game, xOffset, yOffset, xRes, yRes))
       quit = true;
 
+#ifdef SUPERMODEL_METAL4
+    uint64_t inputEnd=SDL_GetPerformanceCounter();
+    if(cpuBegin)SupermodelMetal4::Stages().input=1000.0*double(inputEnd-frameBegin)/s_perfCounterFrequency;
+#endif
     // Render if paused, otherwise run a frame
     if (paused)
       Emu->RenderFrame();
     else
       Emu->RunFrame();
+
+#ifdef SUPERMODEL_METAL4
+    if(cpuBegin)SupermodelMetal4::Stages().emulation=1000.0*double(SDL_GetPerformanceCounter()-inputEnd)/s_perfCounterFrequency;
+    if(!SupermodelMetal4::GetContext().Error().empty())
+    {
+      ErrorLog("Metal 4 renderer stopped: %s",SupermodelMetal4::GetContext().Error().c_str());
+      rendererFailed=true;
+      break; // Continue through normal thread/audio/renderer cleanup below.
+    }
+#endif
 
 #ifdef SUPERMODEL_DEBUGGER
     bool processUI = true;
@@ -1155,7 +1263,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
       totalYRes = yRes = s_runtime_config["YResolution"].ValueAs<unsigned>();
       bool stretchc = s_runtime_config["Stretch"].ValueAs<bool>();
       bool fullscreenc = s_runtime_config["FullScreen"].ValueAs<bool>();
-      if (Result::OKAY != ResizeGLScreen(&xOffset,&yOffset,&xRes,&yRes,&totalXRes,&totalYRes,!stretchc,fullscreenc))
+      if (Result::OKAY != ResizeVideoScreen(&xOffset,&yOffset,&xRes,&yRes,&totalXRes,&totalYRes,!stretchc,fullscreenc))
         goto QuitError;
 
       // Recreate renderers and attach to the emulator
@@ -1321,15 +1429,35 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
     }
 #endif // SUPERMODEL_DEBUGGER
 
+#ifdef SUPERMODEL_METAL4
+    uint64_t frameWorkEnd=SDL_GetPerformanceCounter();
+    if(cpuBegin)SupermodelMetal4::Stages().mainCPU=double(SupermodelMetal4::CPUTime()-cpuBegin)/1e6;
+#endif
+#ifdef SUPERMODEL_METAL4
+    benchmark.CaptureImage(paused); // Explicit image-regression runs only.
+#endif
     // Refresh rate (frame limiting)
     if (paused || s_runtime_config["Throttle"].ValueAs<bool>())
     {
         SuperSleepUntil(nextTime);
+#ifdef SUPERMODEL_METAL4
+        // Keep a stable deadline instead of accumulating each wake-up delay.
+        uint64_t now=SDL_GetPerformanceCounter();
+        if (!nextTime || now>nextTime+perfCountPerFrame) nextTime=now;
+        nextTime+=perfCountPerFrame;
+#else
         nextTime = SDL_GetPerformanceCounter() + perfCountPerFrame;
+#endif
     }
 
     // Measure frame rate
     uint64_t currentFPSTicks = SDL_GetPerformanceCounter();
+#ifdef SUPERMODEL_METAL4
+    if (benchmark.Record(frameBegin,frameWorkEnd,currentFPSTicks,s_perfCounterFrequency,paused)) {
+      quit=true;
+      if (const char* image=std::getenv("SUPERMODEL_BENCH_SCREENSHOT")) SaveFrameBuffer(image);
+    }
+#endif
     if (s_runtime_config["ShowFrameRate"].ValueAs<bool>())
     {
       fpsFramesElapsed += 1;
@@ -1353,8 +1481,15 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
     }
   }
 
+#ifdef SUPERMODEL_METAL4
+  SupermodelMetal4::SetGameActive(false);
+#endif
   // Make sure all threads are paused before shutting down
   Emu->PauseThreads();
+#ifdef SUPERMODEL_METAL4
+  if (benchmark.Completed())
+    if (const char* state=std::getenv("SUPERMODEL_BENCH_SAVE_STATE")) SaveState(Emu,state);
+#endif
 
 #ifdef SUPERMODEL_DEBUGGER
   // If debugger was supplied, detach it from system and restore old logger
@@ -1376,7 +1511,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Emu, CInputs *Input
   delete Render3D;
   delete superAA;
 
-  return 0;
+  return rendererFailed ? 1 : 0;
 
   // Quit with an error
 QuitError:
@@ -1909,7 +2044,11 @@ static void Help(void)
   puts("  -frag-shader=<file>     Load Real3D fragment shader for 3D rendering (legacy");
   puts("                          engine)");
 #endif
+#ifdef SUPERMODEL_METAL4
+  puts("  -print-metal-info       Print native Metal 4 GPU information and quit");
+#else
   puts("  -print-gl-info          Print OpenGL driver information and quit");
+#endif
   puts("");
   puts("Audio Options:");
   puts("  -sound-volume=<vol>     Volume of SCSP-generated sound in %, applies only");
@@ -2217,7 +2356,11 @@ static ParsedCommandLine ParseCommandLine(int argc, char **argv)
       }
       else if (arg == "-true-hz")
         cmd_line.config.Set("RefreshRate", 57.524f);
-      else if (arg == "-print-gl-info")
+      else if (arg == "-print-gl-info"
+#ifdef SUPERMODEL_METAL4
+               || arg == "-print-metal-info"
+#endif
+              )
         cmd_line.print_gl_info = true;
       else if (arg == "-config-inputs")
         cmd_line.config_inputs = true;
@@ -2262,6 +2405,12 @@ static ParsedCommandLine ParseCommandLine(int argc, char **argv)
 int main(int argc, char **argv)
 {
   Title();
+#ifdef SUPERMODEL_METAL4
+  if (!SupermodelMetal4::PrepareAppRuntimeDirectory()) {
+    std::fprintf(stderr, "Metal 4 runtime directory: %s\n", SupermodelMetal4::GetContext().Error().c_str());
+    return 1;
+  }
+#endif
   WriteDefaultConfigurationFileIfNotPresent();
 
   bool loadGUI = false;
@@ -2320,8 +2469,8 @@ int main(int argc, char **argv)
     // Use command line options so we can select the 3D engine for which to print GL info
     Util::Config::MergeINISections(&s_runtime_config, DefaultConfig(), cmd_line.config);
 
-    // We must exit after this because CreateGLScreen() is used
-    PrintGLInfo(true, false, false);
+    // We must exit after this because CreateVideoScreen() is used
+    PrintGraphicsInfo(true, false, false);
     return 0;
   }
 
@@ -2395,7 +2544,7 @@ int main(int argc, char **argv)
   // Create a window
   xRes = 496;
   yRes = 384;
-  if (Result::OKAY != CreateGLScreen(s_runtime_config["New3DEngine"].ValueAs<bool>(), "Supermodel", false, &xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, false, false))
+  if (Result::OKAY != CreateVideoScreen(s_runtime_config["New3DEngine"].ValueAs<bool>(), "Supermodel", false, &xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, false, false))
   {
     exitCode = 1;
     goto Exit;
@@ -2533,13 +2682,12 @@ int main(int argc, char **argv)
   // Fire up Supermodel
   exitCode = Supermodel(game, &rom_set, Emu, Inputs, Outputs);
 #endif // SUPERMODEL_DEBUGGER
-  delete Emu;
-
 Exit:
+  delete Emu;
   delete Inputs;
   delete Outputs;
   delete s_crosshair;
-  DestroyGLScreen();
+  DestroyVideoScreen();
   SDL_Quit();
 
   if (exitCode)
