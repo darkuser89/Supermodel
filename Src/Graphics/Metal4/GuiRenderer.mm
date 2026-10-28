@@ -110,7 +110,10 @@ bool RenderGui(ImDrawData* data,const float clearColour[4]) {
             auto args=MakeArguments(s,vertices,&u,sizeof(u),1,tex->second);if(!args){ok=false;break;}
             [e setRenderPipelineState:gui->pipeline];
             [e setViewport:MTLViewport{0,0,double(width),double(height),0,1}];
-            [e setScissorRect:MTLScissorRect{NSUInteger(x0),NSUInteger(y0),NSUInteger(x1)-NSUInteger(x0),NSUInteger(y1)-NSUInteger(y0)}];
+            // Cover every framebuffer pixel touched by a fractional clip edge.
+            NSUInteger left=NSUInteger(std::floor(x0)),top=NSUInteger(std::floor(y0));
+            NSUInteger right=NSUInteger(std::ceil(x1)),bottom=NSUInteger(std::ceil(y1));
+            [e setScissorRect:MTLScissorRect{left,top,right-left,bottom-top}];
             [e setArgumentTable:args atStages:MTLRenderStageVertex|MTLRenderStageFragment];
             [e drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:draw.ElemCount
                 indexType:sizeof(ImDrawIdx)==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32

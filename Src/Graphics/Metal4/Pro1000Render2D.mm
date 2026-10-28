@@ -1,6 +1,8 @@
 // Native scroll-layer drawing, preserving the existing Pro-1000 mixer interface.
 #include "Graphics/Pro1000Render2D.h"
 #include "Native.h"
+#include <algorithm>
+#include <cstdint>
 using namespace SupermodelMetal4;
 
 struct CPro1000Render2D::Native {
@@ -32,9 +34,17 @@ void CPro1000Render2D::FillLayer() {
     SurfaceUniforms u={};
     u.colour={float((m_scroll>>16)&255)/255,float((m_scroll>>8)&255)/255,float(m_scroll&255)/255,1};
     auto args=MakeArguments(s,nil,&u,sizeof(u),0);if(!args)return;
-    NSUInteger y=target.height-m_yOffset-m_yPixels;
-    auto e=BeginSurfacePass(s,target,false,MTLViewport{double(m_xOffset),double(y),double(m_xPixels),double(m_yPixels),0,1},
-        MTLScissorRect{m_xOffset,y,m_xPixels,m_yPixels});
+    // A window resize can change the drawable before the emulated viewport is
+    // reconfigured. Clip in signed coordinates so a short target cannot wrap Y.
+    int64_t left=m_xOffset,top=int64_t(target.height)-int64_t(m_yOffset)-int64_t(m_yPixels);
+    int64_t right=left+m_xPixels,bottom=top+m_yPixels;
+    int64_t x0=std::clamp(left,int64_t(0),int64_t(target.width));
+    int64_t y0=std::clamp(top,int64_t(0),int64_t(target.height));
+    int64_t x1=std::clamp(right,int64_t(0),int64_t(target.width));
+    int64_t y1=std::clamp(bottom,int64_t(0),int64_t(target.height));
+    if(x1<=x0 || y1<=y0)return;
+    auto e=BeginSurfacePass(s,target,false,MTLViewport{double(x0),double(y0),double(x1-x0),double(y1-y0),0,1},
+        MTLScissorRect{NSUInteger(x0),NSUInteger(y0),NSUInteger(x1-x0),NSUInteger(y1-y0)});
     if(!e)return;
     [e setRenderPipelineState:pipeline];s.Use(pipeline);
     [e setArgumentTable:args atStages:MTLRenderStageFragment];
@@ -48,8 +58,8 @@ void CPro1000Render2D::RenderFrameBottom() {
     @autoreleasepool {
 
     auto& s=GetContext().Native();auto target=s.colourTarget?s.colourTarget:s.drawable.texture;
-    auto e=BeginSurfacePass(s,target,true,MTLViewport{0,0,double(m_totalXPixels),double(m_totalYPixels),0,1},
-        MTLScissorRect{0,0,m_totalXPixels,m_totalYPixels});
+    auto e=BeginSurfacePass(s,target,true,MTLViewport{0,0,double(target.width),double(target.height),0,1},
+        MTLScissorRect{0,0,target.width,target.height});
     if(e)[e endEncoding];
     if(LayerEnabled() && IsBackground())FillLayer();
 
